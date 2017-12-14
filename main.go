@@ -1,3 +1,12 @@
+// Mobile  App Server
+// the following commands are required to run this script
+//go get github.com/gorilla/mux
+//go get github.com/gorilla/mux
+//go get github.com/gorilla/context
+//go get github.com/mitchellh/mapstructure
+//go get github.com/dgrijalva/jwt-go
+//go get github.com/go-sql-driver/mysql
+//go get golang.org/x/crypto/bcrypt
 package main
 
 import "encoding/json"
@@ -17,14 +26,14 @@ import "log"
 var db *sql.DB
 
 type UserRegistration struct {
-	username string `json:"username"`
-	password string `json:"password"`
-	email    string `json:"email"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Email    string `json:"email"`
 }
 
 type UserLogin struct {
-	email    string `json:"email"`
-	password string `json:"password"`
+	Email    string `json:"email"`
+	Password string `json:"password"`
 }
 
 type JwtToken struct {
@@ -36,15 +45,22 @@ type Exception struct {
 }
 
 func initCustomDB(username string, password string, ip string, dbname string) {
+	var err error
 	//"admin:admin@tcp(127.0.0.1:3306)/"
-	db, err := sql.Open("mysql", username + ":" + password + "@tcp(" + ip + ":3306)/" + dbname)
+	db, err = sql.Open("mysql", username + ":" + password + "@tcp(" + ip + ":3306)/" + dbname)
 	if err != nil {
 		panic(err.Error())
 	}
-	defer db.Close()
 
 	err = db.Ping()
 	if err != nil {
+		fmt.Println("\tCreating Database...")
+
+		db, err = sql.Open("mysql", username + ":" + password + "@tcp(" + ip + ":3306)/")
+		if err != nil {
+			panic(err.Error())
+		}
+
 		_,err = db.Exec("CREATE DATABASE "+dbname)
 		if err != nil {
 			panic(err)
@@ -54,34 +70,50 @@ func initCustomDB(username string, password string, ip string, dbname string) {
 			panic(err)
 		}
 
-		_,err = db.Exec("CREATE TABLE accounts ( id INT NOT NULL AUTO_INCREMENT, username VARCHAR(32) NOT NULL UNIQUE, email VARCHAR(64) NOT NULL UNIQUE, password VARCHAR(128) NOT NULL, created DATETIME, PRIMARY KEY id, UNIQUE KEY email (email))")
+		_,err = db.Exec("CREATE TABLE accounts ( id INT NOT NULL AUTO_INCREMENT, username VARCHAR(32) NOT NULL, email VARCHAR(64) NOT NULL, password VARCHAR(128) NOT NULL, created DATETIME, PRIMARY KEY (id), UNIQUE(email))")
 		if err != nil {
 			panic(err)
 		}
 	}
-	fmt.Printf("INIT Database Success\n\n")
+	fmt.Println("INIT Database Success")
 }
 
 func signupAPI(w http.ResponseWriter, req * http.Request ){
+	fmt.Println("SIGNUP API Handler running...")
+
 	var newuser UserRegistration
-	var count   int
-	_=json.NewDecoder(req.Body).Decode(&newuser)
+	var isCopy bool
+	jsonErr :=json.NewDecoder(req.Body).Decode(&newuser)
 	
-	rows, _ := db.Query("SELECT COUNT(*) FROM accounts WHERE email=?", newuser.email)
-	rows.Scan(&count)
-		//Username is available
-	if count > 0 {
-		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(newuser.password), bcrypt.DefaultCost)
+	if jsonErr != nil {
+		panic(jsonErr)
+	}
+
+	fmt.Println("\t Decoded JSON")
+	fmt.Println("\t Checking if user exist: " + newuser.Email)
+
+	checkErr := db.QueryRow("SELECT IF(COUNT(*),'true','false') FROM accounts WHERE email = ?", newuser.Email).Scan(&isCopy)
+
+	if checkErr != nil {
+		panic(checkErr)
+	}
+
+	fmt.Println("\tisCopy: ", isCopy)
+	//Username is available
+	if isCopy == false {
+		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(newuser.Password), bcrypt.DefaultCost)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		creationTime := time.Now().UTC()
-		_, err = db.Exec("INSERT INTO accounts(username, password, email, created) VALUES(?, ?)", newuser.username, hashedPassword, newuser.email, creationTime)
+		_, err = db.Exec("INSERT INTO accounts(username, password, email, created) VALUES(?, ?, ?, ?)", newuser.Username, hashedPassword, newuser.Email, creationTime)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		fmt.Println("\tSIGNUP API Handler successful")
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -90,19 +122,20 @@ func signupAPI(w http.ResponseWriter, req * http.Request ){
 }
 
 func loginAPI(w http.ResponseWriter, req * http.Request ){
+	fmt.Println("LOGIN API Handler running...")
 	var user UserLogin
 	_=json.NewDecoder(req.Body).Decode(&user)
 	var databaseEmail string
 	var databasePassword string
 
-	err := db.QueryRow("SELECT email, password FROM accounts WHERE email=?", user.email).Scan(databaseEmail, databasePassword)
+	err := db.QueryRow("SELECT email, password FROM accounts WHERE email=?", user.Email).Scan(&databaseEmail, &databasePassword)
 	if err != nil {
 		http.Redirect(w, req, "/login", 301)
 		return
 	}
 
 	//validate the password
-	err = bcrypt.CompareHashAndPassword([]byte(databasePassword), []byte(user.password))
+	err = bcrypt.CompareHashAndPassword([]byte(databasePassword), []byte(user.Password))
 	//if the password is wrong
 	if err != nil {
 		http.Redirect(w, req, "/login", 301)
@@ -110,8 +143,8 @@ func loginAPI(w http.ResponseWriter, req * http.Request ){
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"username":user.email,
-		"password":user.password,
+		"username":user.Email,
+		"password":user.Password,
 		"exp":time.Now().Add(time.Hour * 72).Unix(),
 	})
 
@@ -121,11 +154,13 @@ func loginAPI(w http.ResponseWriter, req * http.Request ){
 		fmt.Println(error)
 	}
 
+	fmt.Println("\tLOGIN API Handler successful")
 	json.NewEncoder(w).Encode(JwtToken{Token: tokenString})
 }
 
 func ValidateTokenMiddleware( next http.HandlerFunc) http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request){
+		fmt.Println("Validate Token API Handler running...")
 			authorizationHeader := req.Header.Get("authorization")
 			if authorizationHeader != "" {
 				bearerToken := strings.Split(authorizationHeader, " ")
@@ -141,8 +176,9 @@ func ValidateTokenMiddleware( next http.HandlerFunc) http.HandlerFunc {
 							return
 					}
 					if token.Valid {
-							context.Set(req, "decoded", token.Claims)
-							next(w, req)
+						fmt.Println("\tValidate Token API successful")
+						context.Set(req, "decoded", token.Claims)
+						next(w, req)
 					} else {
 							json.NewEncoder(w).Encode(Exception{Message: "Invalid authorization token"})
 					}
@@ -175,8 +211,13 @@ func LookupUserAPI(w http.ResponseWriter, req * http.Request ){
 }
 
 func main() {
+
+    fmt.Println("Starting the application...")
+	initCustomDB("root","jukjukY1", "127.0.0.1", "test")
+	defer db.Close()
+
+	fmt.Println("Starting Router")
 	router := mux.NewRouter()
-	fmt.Println("Starting the application...")
 	router.HandleFunc("/login", loginAPI).Methods("POST")
 	router.HandleFunc("/signup", signupAPI).Methods("POST")
 	router.HandleFunc("/updateProfile", ValidateTokenMiddleware(UpdateProfileAPI)).Methods("POST")
