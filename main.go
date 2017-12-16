@@ -74,6 +74,13 @@ func initCustomDB(username string, password string, ip string, dbname string) {
 		if err != nil {
 			panic(err)
 		}
+		
+		_,err = bd.Exec("CREATE TABLE profile (id INT NOT NULL AUTO_INCREMENT, Profile_id INT , name VARCHAR(32))")
+		if err != nil {
+			panic(err)
+		}
+		
+		
 	}
 	fmt.Println("INIT Database Success")
 }
@@ -127,12 +134,25 @@ func loginAPI(w http.ResponseWriter, req * http.Request ){
 	_=json.NewDecoder(req.Body).Decode(&user)
 	var databaseEmail string
 	var databasePassword string
+	var databaseiId int
+	var databaseName string
+	var confirm string
 
-	err := db.QueryRow("SELECT email, password FROM accounts WHERE email=?", user.Email).Scan(&databaseEmail, &databasePassword)
+	err := db.QueryRow("SELECT email, password, id, username  FROM accounts WHERE email=?", user.Email).Scan(&databaseEmail, &databasePassword, &databaseId, &databaseName)
 	if err != nil {
 		http.Redirect(w, req, "/login", 301)
 		return
 	}
+	_, err = db.Exec("SELECT id FROM accounts WHERE profile_id=?", id),Scan(&confirm)
+	if confirm == nil {
+		_, err = db.Exec("INSERT INTO profile (profile_id, name) VALUES(?, ?)", id, "")
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+	}
+
+	
 
 	//validate the password
 	err = bcrypt.CompareHashAndPassword([]byte(databasePassword), []byte(user.Password))
